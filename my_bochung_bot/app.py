@@ -1,99 +1,92 @@
 from flask import Flask, request, jsonify
-from datetime import datetime
-import json
 import pandas as pd
+from datetime import datetime
+import os
 
 app = Flask(__name__)
 
-# 1. 사용자 정보 불러오기
-def load_students():
-    with open("students.json", encoding="utf-8") as f:
-        return json.load(f)
+# 엑셀 파일 경로
+BOCHUNG_PATH = "bochung_data.xlsx"
+TIMETABLE_PATH = "timetable_data.xlsx"
 
-# 2. 사용자 정보 저장하기
-def save_students(data):
-    with open("students.json", "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+# 데이터 불러오기
+bochung_df = pd.read_excel(BOCHUNG_PATH, sheet_name='Sheet1')
+timetable_df = pd.read_excel(TIMETABLE_PATH, sheet_name='3학년', header=3)
 
-# 3. 오늘 날짜에 해당하는 시간표 불러오기
-def get_today_schedule():
-    df = pd.read_excel("schedule.xlsx")
-    today = datetime.now().strftime("%Y-%m-%d")
-    row = df[df["날짜"].astype(str).str.startswith(today)]
+# 사용자 정보 저장 (간단한 메모리 기반)
+user_data = {}  # chat_id: {'이름': 이름, '반': 반, '번호': 번호}
+
+# 수업코드 매칭용 역변환 dict
+def get_user_classes(name, ban, number):
+    result = {}
+    row = bochung_df[(bochung_df["이름"] == name) & (bochung_df["반"] == ban) & (bochung_df["번호"] == number)]
     if row.empty:
-        return None
-    return row.iloc[0]  # 해당 날짜의 row 반환
+        return result
+    row = row.iloc[0]
+    for subject in row.index:
+        if subject not in ['순번', '학년', '반', '번호', '이름'] and pd.notna(row[subject]):
+            code = row[subject]
+            result[code] = subject.replace("(3학년)", "").strip()
+    return result
 
-# 4. 메인 응답 처리 함수
+# 오늘 날짜로 시간표 필터
+def get_today_schedule(user_info):
+    today = datetime.now().strftime("%-m/%-d")  # 예: '5/19'
+    today_row = timetable_df[timetable_df['요일'] == today]
+    if today_row.empty:
+        return "오늘은 수업이 없습니다."
+    
+    name, ban, number = user_info['이름'], user_info['반'], user_info['번호']
+    user_classes = get_user_classes(name, ban, number)
+
+    result = []
+    for period in ['8교시', '9교시']:
+        value = today_row[period].values[0]  # 예: "F-6"
+        if pd.isna(value) or '-' not in value:
+            continue
+        code, class_num = value.split('-')
+        if code in user_classes:
+            result.append(f"{period}: {user_classes[code]}-{class_num}반")
+    return "\n".join(result) if result else "오늘은 보충 수업이 없습니다."
+
 @app.route("/message", methods=["POST"])
-def message():
-    req = request.get_json()
-    user_id = req["userRequest"]["user"]["id"]
-    utter = req["userRequest"]["utterance"].strip()
+def kakao_message():
+    data = request.json
+    chat_id = data['userRequest']['user']['id']
+    utter = data['userRequest']['utterance'].strip()
 
-    students = load_students()
-
-    # 1️⃣ 사용자 등록 처리
-    if user_id not in students:
-        # 등록 시: "6반 7번 서준우"
-        if "반" in utter and "번" in utter:
-            parts = utter.replace("반", "").replace("번", "").split()
-            if len(parts) == 3:
-                class_num, student_num, name = parts
-                students[user_id] = {
-                    "반": class_num,
-                    "번호": student_num,
-                    "이름": name,
-                    "A": "수학1", "B": "영독", "C": "물리학", "D": "수학2", "E": "생명과학", "F": "자습"
-                }
-                save_students(students)
-                text = f"{name}님 등록 완료!\n이제 '오늘 보충'이라고 입력해보세요."
-            else:
-                text = "형식에 맞게 입력해주세요. 예: 6반 7번 서준우"
+    # 사용자 초기 등록
+    if chat_id not in user_data:
+        if "이름" in utter and "번" in utter:
+            try:
+                # 예: 서준우 6반 7번
+                name, ban, num = utter.split()
+                ban = int(ban.replace("반", ""))
+                num = int(num.replace("번", ""))
+                user_data[chat_id] = {'이름': name, '반': ban, '번호': num}
+                return jsonify(make_response(f"{name}님 정보를 저장했어요. '오늘 보충'이라고 입력해보세요."))
+            except:
+                return jsonify(make_response("올바른 형식: 이름 6반 7번"))
         else:
-            text = "안녕하세요! 이름과 학번을 알려주세요. 예: 6반 7번 서준우"
-        return jsonify(make_simple_response(text))
+            return jsonify(make_response("처음이시군요! '이름 6반 7번'처럼 입력해주세요."))
 
-    # 2️⃣ 오늘 보충 요청
+    # 정보 입력 후
     if "오늘 보충" in utter:
-        user = students[user_id]
-        sched = get_today_schedule()
-        if sched is None:
-            return jsonify(make_simple_response("오늘은 보충 수업이 없습니다."))
+        response = get_today_schedule(user_data[chat_id])
+        return jsonify(make_response(response))
 
-        # 현재 사용자 반 정보로 해당 반 수업 확인
-        cls = int(user["반"])
-        class_col = f"Unnamed: {cls + 3}"  # 예: 6반 → Unnamed: 9
-        subject_8 = sched[class_col] if sched["교시"] == 8 else None
-        subject_9 = sched[class_col] if sched["교시"] == 9 else None
+    return jsonify(make_response("잘 이해하지 못했어요. '오늘 보충' 또는 '이름 6반 7번'처럼 입력해주세요."))
 
-        code_to_subject = {k: user[k] for k in "ABCDEF"}
-
-        result = "[오늘 보충 수업 안내]\n"
-        if subject_8:
-            result += f"8교시: {code_to_subject.get(subject_8, '정보 없음')} - {cls}반\n"
-        if subject_9:
-            result += f"9교시: {code_to_subject.get(subject_9, '정보 없음')} - {cls}반\n"
-
-        return jsonify(make_simple_response(result))
-
-    return jsonify(make_simple_response("잘 이해하지 못했어요. '오늘 보충'이라고 입력해보세요."))
-
-# 응답 포맷 JSON 만들기
-def make_simple_response(text):
+# 카카오 응답 포맷
+def make_response(text):
     return {
         "version": "2.0",
         "template": {
             "outputs": [{
-                "simpleText": {"text": text}
-            }],
-            "quickReplies": [
-                {
-                    "label": "오늘 보충",
-                    "action": "message",
-                    "messageText": "오늘 보충"
+                "simpleText": {
+                    "text": text
                 }
-            ]
+            }]
         }
     }
 
