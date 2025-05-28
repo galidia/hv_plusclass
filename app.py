@@ -1,5 +1,7 @@
 from flask import Flask, render_template, request
 from bochung import get_timetable  # 기존 코드에서 함수 가져옴
+import os
+
 
 app = Flask(__name__)
 
