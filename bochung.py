@@ -34,8 +34,10 @@ weekday_kor = {
 
 def get_timetable(student_id: str) -> str:
     # 파일 경로 설정
-    student_path = r"C:\Users\jakeu\OneDrive\Desktop\pythoncordingfile\bochung\사람당 보충.json"
-    schedule_path = r"C:\Users\jakeu\OneDrive\Desktop\pythoncordingfile\bochung\보충시간표_원래날짜_요일완전복원.json"
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+    student_path = os.path.join(BASE_DIR, "private.json")
+    schedule_path = os.path.join(BASE_DIR, "date.json")
 
     # 파일 존재 여부 확인
     if not os.path.exists(student_path) or not os.path.exists(schedule_path):
